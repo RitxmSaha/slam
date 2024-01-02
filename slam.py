@@ -3,7 +3,6 @@ import open3d as o3d
 import g2o
 import numpy as np
 import features
-import threading
 np.set_printoptions(suppress=True, precision=6)
 
 class Frame:
@@ -30,6 +29,13 @@ class SLAM:
         self.index = -1
         self.prev = 0
         self.curr = 0
+        self.Rt = np.eye(4)
+
+    def update_Rt(self, new_Rt):
+        self.Rt = new_Rt
+
+    def get_Rt(self):
+        return np.copy(self.Rt)
 
     def setFocol(self, focal):
         self.focal = focal
@@ -42,23 +48,16 @@ class SLAM:
         self.index += 1
         self.prev = self.curr
         self.curr = self.frames[self.index]
-
-def vizualize_slam(slam):
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    vis.add_geometry(mesh)
     
-
-
-        
 path = "test_countryroad.mp4"
 slam = SLAM()
 fe = features.FeatureExtractor()
+vis = o3d.visualization.Visualizer()
+vis.create_window()
+rotation_degrees = 180
+rotation_radians = np.deg2rad(rotation_degrees)
+camera_boxes = []
 
-
-vis_thread = threading.Thread(target=vizualize_slam, args=(slam,))
-vis_thread.start()
 
 cap = cv.VideoCapture(path)
 
@@ -77,11 +76,15 @@ slam.addFrame(new_frame)
 
 
 while cap.isOpened():
+
+    
     #print(slam.index)
     ret, frame = cap.read()
     kps, des = fe.findKeypoints(frame)
     new_frame = Frame(kps, des)
     slam.addFrame(new_frame)
+
+    #print(slam.Rt)
     
     kps2, des2 = fe.matcher(slam.prev,slam.curr)
     kps1, des1 = slam.prev.kps, slam.prev.des
@@ -99,6 +102,52 @@ while cap.isOpened():
 
     _, R, t, mask = cv.recoverPose(E, pts1, pts2, slam.K)
 
+    T = np.eye(4)  # Initialize as 4x4 identity matrix
+    T[:3, :3] = R  # Set the upper-left 3x3 block as the rotation matrix
+    T[:3, 3] = t.T  # Set the upper-right 3x1 block as the translation vector
+
+    P1 = np.dot(slam.K, np.eye(3, 4))  # Projection matrix for the first camera frame
+    P2 = np.dot(slam.K, np.concatenate((R, t), axis=1))  # Projection matrix for the second frame
+
+    # Triangulate points
+    points_4d_hom = cv.triangulatePoints(P1, P2, pts1.T, pts2.T)
+
+
+    points_3d = points_4d_hom[:3] / points_4d_hom[3]
+
+    points_3d = points_3d[:, points_3d[2] > 0]
+
+    Rt = slam.get_Rt()
+    points_3d = np.dot(Rt[:3, :3], points_3d) + Rt[:3, 3:4]
+
+
+    points_3d_o3d = o3d.geometry.PointCloud()
+    points_3d_o3d.points = o3d.utility.Vector3dVector(points_3d.T)
+    print(points_3d_o3d.points[0])
+    
+    num_points = len(points_3d_o3d.points)
+    black_color = [0, 0, 0]  # RGB for black
+    points_3d_o3d.colors = o3d.utility.Vector3dVector([black_color] * num_points)
+
+    vis.add_geometry(points_3d_o3d,False)
+
+    # Update the current pose by chaining the new transformation
+    slam.update_Rt(np.dot(slam.Rt, T)) # Matrix multiplication
+    Rt = slam.get_Rt()
+    camera_box = o3d.geometry.TriangleMesh.create_box(width=0.2, height=0.1, depth=0.2)
+    camera_box.paint_uniform_color([1, 0, 0])  # Red color for the camera box
+    camera_box.transform(Rt)
+    camera_boxes.append(camera_box)
+
+
+    if(slam.index < 100):
+        vis.add_geometry(camera_box,True)
+    else:
+        vis.add_geometry(camera_box,False)
+
+    vis.poll_events()
+    vis.update_renderer()
+
     slam.curr.R = R
     slam.curr.t = t
 
@@ -110,207 +159,18 @@ while cap.isOpened():
         cv.line(frame,curr, prev,(0,0,255), 1)
 
 
-    
 
 
-    # kps1, des1 = prev_features
-    # kps2, des2 = computeFeatures(gray)
-    # prev_features = (kps2, des2)
-    
-    # matches = bf.knnMatch(des1,des2, k=2)
-
-    # lowe_matches = []
-    # ratio_thresh = 0.75
-    # for m,n in matches:
-    #     if m.distance < ratio_thresh * n.distance:
-    #         lowe_matches.append(m)
-    # matches = lowe_matches
-
-    # kps1 = ([kps1[m.queryIdx] for m in matches])
-    # des1 = ([des1[m.queryIdx] for m in matches])
-    # kps2 = ([kps2[m.trainIdx] for m in matches])
-    # des2 = ([des2[m.trainIdx] for m in matches])
-
-    # pts1 = np.float32([kp.pt for kp in kps1])
-    # pts2 = np.float32([kp.pt for kp in kps2])
-
-    
-    # E, inliers = cv.findEssentialMat(pts1, pts2, K, cv.RANSAC, 0.9999, 1)
-    # _, R, t, mask = cv.recoverPose(E, pts1, pts2,K)
-    # pts1 = [kps1[i] for i in range(len(kps1)) if inliers[i]]
-    # pts2 = [kps2[i] for i in range(len(kps2)) if inliers[i]]
-    # #print(np.linalg.norm(t))
-    # print(np.diag(R))
-    # print(str(len(inliers))+" matches")
-
-    # if(t[2] < 0):
-    #     count2+= 1
-    # #print(count2/(count))
-    # print(t.T)
-
-    
-
-
-    # modified_frame = cv.drawKeypoints(frame, pts2, None, color=(0,255,0), flags=0)
-    # for i in range(len(pts1)):
-    #     curr = (int(pts2[i].pt[0]),int(pts2[i].pt[1]))
-    #     prev = (int(pts1[i].pt[0]),int(pts1[i].pt[1]))
-    #     cv.line(modified_frame,curr, prev,(0,0,255),3)
-
-
+    #o3d.visualization.draw_geometries([points_3d_o3d])
 
     cv.imshow('Video', frame)
-
     if cv.waitKey(25) & 0xFF == ord('q'):
         break
-
+        
+    if(slam.index == 100):
+        vis.run()
 cap.release()
 cv.destroyAllWindows()
-
-# def create_optimizer():
-#     optimizer = g2o.SparseOptimizer()
-#     solver = g2o.BlockSolverX(g2o.LinearSolverEigenX())
-#     solver = g2o.OptimizationAlgorithmLevenberg(solver)
-#     optimizer.set_algorithm(solver)
-#     return optimizer
-
-
-# optimizer = create_optimizer()
-
-
-
-
-
-
-# path = "test_countryroad.mp4"
-
-# focal = 270
-
-# width = 1920
-# height = 1080
-# center_x = width/2
-# center_y = height/2
-
-# # Intrinsic Camera Matrix
-# K = np.array([[focal, 0    , center_x],
-#               [0    , focal, center_y],
-#               [0    , 0    , 1       ]])
-
-# #orb = cv.SIFT_create(contrastThreshold = 0.01, edgeThreshold=100, sigma=1.6)
-
-# cap = cv.VideoCapture(path)
-# orb = cv.ORB_create()
-# count = 0
-# count2 = 0
-# bf = cv.BFMatcher(cv.NORM_HAMMING)
-
-# def computeFeatures(frame):
-
-#     feats = cv.goodFeaturesToTrack(frame, 3000, qualityLevel=0.01, minDistance=5)
-#     kps = [cv.KeyPoint(x=f[0][0], y=f[0][1], size=20) for f in feats]
-
-#     kps, des = orb.compute(frame, kps)
-
-#     return kps, des
-
-
-#     grid_size = 1
-#     h, w = frame.shape[:2]
-#     grid_height, grid_width = h // grid_size, w // grid_size
-#     all_keypoints = []
-#     all_descriptors = []
-
-#     for i in range(grid_size):
-#         for j in range(grid_size):
-#             # Crop the image to the current grid
-#             grid = frame[i*grid_height:(i+1)*grid_height, j*grid_width:(j+1)*grid_width]
-#             feat_coords = cv.goodFeaturesToTrack(grid, 3000, qualityLevel=0.01, minDistance=3)
-#             if feat_coords is not None:
-#                 keypoints = [cv.KeyPoint(x=f[0][0], y=f[0][1], size=20) for f in feat_coords]
-
-#                 keypoints, descriptors = orb.compute(grid, keypoints)
-
-#                 for kp in keypoints:
-#                     kp.pt = (kp.pt[0] + j*grid_width, kp.pt[1] + i*grid_height)
-
-#                 all_keypoints.extend(keypoints)
-#                 if descriptors is not None:
-#                     all_descriptors.append(descriptors)
-
-#     all_descriptors = np.concatenate(all_descriptors, axis=0)
-
-#     return all_keypoints, all_descriptors
-
-
-
-# if not cap.isOpened():
-#     print("Error: Could not read video")
-#     exit()
-
-# ret, frame = cap.read()
-# gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-# kps1, des1 = computeFeatures(gray)
-# prev_features = (kps1, des1)
-# while cap.isOpened():
-#     count += 1
-
-#     ret, frame = cap.read()
-#     gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-
-
-#     kps1, des1 = prev_features
-#     kps2, des2 = computeFeatures(gray)
-#     prev_features = (kps2, des2)
-    
-#     matches = bf.knnMatch(des1,des2, k=2)
-
-#     lowe_matches = []
-#     ratio_thresh = 0.75
-#     for m,n in matches:
-#         if m.distance < ratio_thresh * n.distance:
-#             lowe_matches.append(m)
-#     matches = lowe_matches
-
-#     kps1 = ([kps1[m.queryIdx] for m in matches])
-#     des1 = ([des1[m.queryIdx] for m in matches])
-#     kps2 = ([kps2[m.trainIdx] for m in matches])
-#     des2 = ([des2[m.trainIdx] for m in matches])
-
-#     pts1 = np.float32([kp.pt for kp in kps1])
-#     pts2 = np.float32([kp.pt for kp in kps2])
-
-    
-#     E, inliers = cv.findEssentialMat(pts1, pts2, K, cv.RANSAC, 0.9999, 1)
-#     _, R, t, mask = cv.recoverPose(E, pts1, pts2,K)
-#     pts1 = [kps1[i] for i in range(len(kps1)) if inliers[i]]
-#     pts2 = [kps2[i] for i in range(len(kps2)) if inliers[i]]
-#     #print(np.linalg.norm(t))
-#     print(np.diag(R))
-#     print(str(len(inliers))+" matches")
-
-#     if(t[2] < 0):
-#         count2+= 1
-#     #print(count2/(count))
-#     print(t.T)
-
-    
-
-
-#     modified_frame = cv.drawKeypoints(frame, pts2, None, color=(0,255,0), flags=0)
-#     for i in range(len(pts1)):
-#         curr = (int(pts2[i].pt[0]),int(pts2[i].pt[1]))
-#         prev = (int(pts1[i].pt[0]),int(pts1[i].pt[1]))
-#         cv.line(modified_frame,curr, prev,(0,0,255),3)
-
-
-
-#     cv.imshow('Video', modified_frame)
-
-#     if cv.waitKey(25) & 0xFF == ord('q'):
-#         break
-
-# cap.release()
-# cv.destroyAllWindows()
 
 # def create_optimizer():
 #     optimizer = g2o.SparseOptimizer()
