@@ -1,4 +1,4 @@
-#Sparse Monocular Visual-SLAM Implementation
+**Sparse Monocular Visual-SLAM Implementation**
 
 This is my vSLAM Implementation! Given a video with a focal length, my code will generate a 3D Vizualization which includes camera poses of each frame as well as 3D point clouds of the surrounding environment.
 
