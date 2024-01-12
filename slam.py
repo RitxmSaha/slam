@@ -1,8 +1,8 @@
 import cv2 as cv
 import open3d as o3d
-import g2o
 import numpy as np
 import features
+import optimize
 np.set_printoptions(suppress=True, precision=6)
 
 class Frame:
@@ -24,6 +24,7 @@ class Frame:
 
 class SLAM:
     def __init__(self):
+        self.ba = optimize.BundleAdjustment()
         self.focal = 0
         self.width = 0
         self.height = 0
@@ -46,6 +47,9 @@ class SLAM:
         self.index += 1
         self.prev = self.curr
         self.curr = self.frames[self.index]
+
+    def adjust(self):
+        self.ba.optimize(self.frames)
     
 path = "test_countryroad.mp4"
 slam = SLAM()
@@ -55,60 +59,6 @@ vis.create_window()
 rotation_degrees = 180
 rotation_radians = np.deg2rad(rotation_degrees)
 camera_boxes = []
-
-def create_optimizer():
-    optimizer = g2o.SparseOptimizer()
-    solver = g2o.BlockSolverSE3(g2o.LinearSolverEigenSE3())
-    algorithm = g2o.OptimizationAlgorithmLevenberg(solver)
-    optimizer.set_algorithm(algorithm)
-    return optimizer
-
-def add_camera_pose_vertices(optimizer, frames):
-    for i, frame in enumerate(frames):
-        pose = g2o.SE3Quat(frame.aRt[:3, :3], frame.aRt[:3, 3])
-        vertex = g2o.VertexSE3Expmap()
-        vertex.set_id(i)
-        vertex.set_estimate(pose)
-        optimizer.add_vertex(vertex)
-
-def add_point_vertices(optimizer, frames):
-    point_id = len(frames)
-    for frame in frames:
-        for pt in frame.pts:
-            vertex = g2o.VertexSBAPointXYZ()
-            vertex.set_id(point_id)
-            vertex.set_estimate(pt)
-            vertex.set_marginalized(True)
-            optimizer.add_vertex(vertex)
-            point_id += 1
-
-def add_edges(optimizer, frames, K):
-    point_id = len(frames)
-    for i, frame in enumerate(frames):
-        for pt in frame.pts:
-            edge = g2o.EdgeProjectXYZ2UV()
-            edge.set_vertex(0, vertex_sbapoint)  # Point vertex
-            edge.set_vertex(1, vertex_se3)       # Camera pose vertex
-            edge.set_measurement( ... )  # The 2D point in the image
-            edge.set_information( ... )  # Information matrix
-            optimizer.add_edge(edge)
-            point_id += 1
-
-def optimize(optimizer):
-    optimizer.initialize_optimization()
-    optimizer.optimize(10)  # Number of iterations
-
-def update_frames(optimizer, frames):
-    for i, frame in enumerate(frames):
-        optimized_pose = optimizer.vertex(i).estimate()
-        frame.aRt[:3, :3] = optimized_pose.rotation().matrix()
-        frame.aRt[:3, 3] = optimized_pose.translation()
-
-
-
-
-
-
 
 
 cap = cv.VideoCapture(path)
@@ -124,16 +74,11 @@ slam.setFocol(500)
 
 kps, des = fe.findKeypoints(frame)
 new_frame = Frame(kps, des)
+new_frame.aRt = np.eye(4)
 slam.addFrame(new_frame)
 
-
 while cap.isOpened():
-
-    
-    #print(slam.index)
     ret, frame = cap.read()
-    if(ret == False):
-        break
     kps, des = fe.findKeypoints(frame)
     new_frame = Frame(kps, des)
     slam.addFrame(new_frame)
@@ -153,6 +98,9 @@ while cap.isOpened():
     pts2 = np.float32([kp.pt for kp in kps2])
 
     _, R, t, mask = cv.recoverPose(E, pts1, pts2, slam.K)
+
+    new_frame.R = R
+    new_frame.t = t.T
 
     T = np.eye(4)  # Initialize as 4x4 identity matrix
     T[:3, :3] = R  # Set the upper-left 3x3 block as the rotation matrix
@@ -179,6 +127,11 @@ while cap.isOpened():
 
     new_frame.optimizer_arr = optimizer_arr
 
+    slam.Rt = (np.dot(slam.Rt, T)) 
+    new_frame.aRt = slam.Rt
+
+    slam.adjust()
+
     print(optimizer_arr[0].shape)
     print(optimizer_arr[1].shape)
     print(optimizer_arr[2].shape)
@@ -195,8 +148,7 @@ while cap.isOpened():
     new_frame.pts = ptso3d.points
 
     # Update the current pose by chaining the new transformation
-    slam.Rt = (np.dot(slam.Rt, T)) 
-    new_frame.aRt = slam.Rt
+    
 
     if(slam.index % 3 == 0):
         vis.add_geometry(ptso3d,False)
@@ -233,13 +185,3 @@ while cap.isOpened():
 vis.run()
 cap.release()
 cv.destroyAllWindows()
-
-# def create_optimizer():
-#     optimizer = g2o.SparseOptimizer()
-#     solver = g2o.BlockSolverX(g2o.LinearSolverEigenX())
-#     solver = g2o.OptimizationAlgorithmLevenberg(solver)
-#     optimizer.set_algorithm(solver)
-#     return optimizer
-
-
-# optimizer = create_optimizer()
